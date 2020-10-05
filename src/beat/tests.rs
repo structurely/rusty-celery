@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::Stream;
 
+use crate::broker::Queue;
 use crate::error::{BrokerError, ProtocolError};
 use crate::{
     protocol::{Message, TryDeserializeMessage},
@@ -314,7 +315,7 @@ impl BrokerBuilder for DummyBrokerBuilder {
         unimplemented!()
     }
 
-    fn declare_queue(self, _name: &str) -> Self {
+    fn declare_queue(self, _queue: Queue) -> Self {
         unimplemented!()
     }
 

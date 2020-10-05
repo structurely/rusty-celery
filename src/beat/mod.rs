@@ -21,7 +21,7 @@
 //! Here instead we have only one scheduler struct, and the different backends
 //! correspond to the different scheduler implementations in Python.
 
-use crate::broker::{build_and_connect, configure_task_routes, Broker, BrokerBuilder};
+use crate::broker::{build_and_connect, configure_task_routes, Broker, BrokerBuilder, Queue};
 use crate::routing::{self, Rule};
 use crate::{
     error::{BeatError, BrokerError, CeleryError},
@@ -31,7 +31,6 @@ use crate::{
 use log::{debug, error, info};
 use std::time::SystemTime;
 use tokio::time::{self, Duration};
-
 mod scheduler;
 pub use scheduler::Scheduler;
 
@@ -55,7 +54,7 @@ where
     broker_connection_max_retries: u32,
     broker_connection_retry_delay: u32,
     default_queue: String,
-    task_routes: Vec<(String, String)>,
+    task_routes: Vec<(String, Queue)>,
     task_options: TaskOptions,
 }
 
@@ -176,7 +175,7 @@ where
         let broker_builder = self
             .config
             .broker_builder
-            .declare_queue(&self.config.default_queue);
+            .declare_queue(Queue::new((*self.config.default_queue).to_string()));
 
         let (broker_builder, task_routes) =
             configure_task_routes(broker_builder, &self.config.task_routes)?;

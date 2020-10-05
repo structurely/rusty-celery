@@ -15,8 +15,7 @@ use tokio::sync::RwLock;
 use tokio::time::{self, Duration};
 
 mod trace;
-
-use crate::broker::{build_and_connect, configure_task_routes, Broker, BrokerBuilder};
+use crate::broker::{build_and_connect, configure_task_routes, Broker, BrokerBuilder, Queue};
 use crate::error::{BrokerError, CeleryError, TraceError};
 use crate::protocol::{Message, MessageContentType, TryDeserializeMessage};
 use crate::routing::Rule;
@@ -36,7 +35,8 @@ where
     broker_connection_retry_delay: u32,
     default_queue: String,
     task_options: TaskOptions,
-    task_routes: Vec<(String, String)>,
+    task_routes: Vec<(String, Queue)>,
+    queues: Vec<Queue>,
 }
 
 /// Used to create a `Celery` app with a custom configuration.
@@ -72,6 +72,7 @@ where
                 default_queue: "celery".into(),
                 task_options: TaskOptions::default(),
                 task_routes: vec![],
+                queues: vec![],
             },
         }
     }
@@ -200,13 +201,19 @@ where
         self
     }
 
+    /// Set a vector of Celery queues to associatde with your celery app.
+    pub fn queues(mut self, queues: Vec<Queue>) -> Self {
+        self.config.queues = queues;
+        self
+    }
+
     /// Construct a `Celery` app with the current configuration.
     pub async fn build(self) -> Result<Celery<Bb::Broker>, CeleryError> {
         // Declare default queue to broker.
         let broker_builder = self
             .config
             .broker_builder
-            .declare_queue(&self.config.default_queue);
+            .declare_queue(Queue::new((*self.config.default_queue).to_string()));
 
         let (broker_builder, task_routes) =
             configure_task_routes(broker_builder, &self.config.task_routes)?;
@@ -238,7 +245,6 @@ where
         })
     }
 }
-
 /// A `Celery` app is used to produce or consume tasks asynchronously. This is the struct that is
 /// created with the [`app`](macro.app.html) macro.
 pub struct Celery<B: Broker> {

@@ -8,7 +8,7 @@ use lapin::options::{
 };
 use lapin::types::{AMQPValue, FieldArray, FieldTable};
 use lapin::uri::{self, AMQPUri};
-use lapin::{BasicProperties, Channel, Connection, ConnectionProperties, Queue};
+use lapin::{BasicProperties, Channel, Connection, ConnectionProperties};
 use log::debug;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -16,13 +16,14 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_amqp::LapinTokioExt;
 
 use super::{Broker, BrokerBuilder};
+use crate::broker::Queue;
 use crate::error::{BrokerError, ProtocolError};
 use crate::protocol::{Message, MessageHeaders, MessageProperties, TryDeserializeMessage};
 
 struct Config {
     broker_url: String,
     prefetch_count: u16,
-    queues: HashMap<String, QueueDeclareOptions>,
+    queues: Vec<Queue>,
     heartbeat: Option<u16>,
 }
 
@@ -41,7 +42,7 @@ impl BrokerBuilder for AMQPBrokerBuilder {
             config: Config {
                 broker_url: broker_url.into(),
                 prefetch_count: 10,
-                queues: HashMap::new(),
+                queues: Vec::new(),
                 heartbeat: Some(60),
             },
         }
@@ -54,18 +55,9 @@ impl BrokerBuilder for AMQPBrokerBuilder {
         self
     }
 
-    /// Declare a queue.
-    fn declare_queue(mut self, name: &str) -> Self {
-        self.config.queues.insert(
-            name.into(),
-            QueueDeclareOptions {
-                passive: false,
-                durable: true,
-                exclusive: false,
-                auto_delete: false,
-                nowait: false,
-            },
-        );
+    /// Declare a queue to process during broker build time.  
+    fn declare_queue(mut self, queue: Queue) -> Self {
+        self.config.queues.push(queue);
         self
     }
 
@@ -88,12 +80,26 @@ impl BrokerBuilder for AMQPBrokerBuilder {
         let consume_channel = conn.create_channel().await?;
         let produce_channel = conn.create_channel().await?;
 
-        let mut queues: HashMap<String, Queue> = HashMap::new();
-        for (queue_name, queue_options) in &self.config.queues {
-            let queue = consume_channel
-                .queue_declare(queue_name, *queue_options, FieldTable::default())
-                .await?;
-            queues.insert(queue_name.into(), queue);
+        let mut queues: HashMap<String, lapin::Queue> = HashMap::new();
+        let mut queue_options: HashMap<String, QueueDeclareOptions> = HashMap::new();
+
+        for queue in &self.config.queues {
+            queues.insert(
+                queue.name.clone(),
+                consume_channel
+                    .queue_declare(
+                        &queue.name.clone(),
+                        queue.options.unwrap(),
+                        FieldTable::default(),
+                    )
+                    .await?,
+            );
+
+            queue_options.insert(queue.name.clone(), queue.get_options());
+            match &queue.exchange {
+                Some(exchange) => exchange.declare(&consume_channel).await?,
+                None => continue,
+            }
         }
 
         let broker = AMQPBroker {
@@ -103,7 +109,7 @@ impl BrokerBuilder for AMQPBrokerBuilder {
             produce_channel: Mutex::new(produce_channel),
             consume_channel_write_lock: Mutex::new(0),
             queues: RwLock::new(queues),
-            queue_declare_options: self.config.queues.clone(),
+            queue_declare_options: queue_options,
             prefetch_count: Mutex::new(self.config.prefetch_count),
         };
         broker
@@ -143,7 +149,7 @@ pub struct AMQPBroker {
     /// Mapping of queue name to Queue struct.
     ///
     /// This is only wrapped in RwLock for interior mutability.
-    queues: RwLock<HashMap<String, Queue>>,
+    queues: RwLock<HashMap<String, lapin::Queue>>,
 
     queue_declare_options: HashMap<String, QueueDeclareOptions>,
 

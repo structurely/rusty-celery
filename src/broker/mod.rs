@@ -1,18 +1,19 @@
 //! The broker is an integral part of a `Celery` app. It provides the transport for messages that
 //! encode tasks.
 
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use futures::Stream;
-use log::error;
-use tokio::time::{self, Duration};
-
 use crate::error::{BrokerError, CeleryError};
 use crate::{
     protocol::{Message, TryDeserializeMessage},
     routing::Rule,
 };
-
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures::Stream;
+use lapin::options::{ExchangeDeclareOptions, QueueDeclareOptions};
+use lapin::types::FieldTable;
+use lapin::{Channel, ExchangeKind};
+use log::error;
+use tokio::time::{self, Duration};
 mod amqp;
 pub use amqp::{AMQPBroker, AMQPBrokerBuilder};
 #[cfg(test)]
@@ -95,7 +96,7 @@ pub trait BrokerBuilder {
     fn prefetch_count(self, prefetch_count: u16) -> Self;
 
     /// Declare a queue.
-    fn declare_queue(self, name: &str) -> Self;
+    fn declare_queue(self, queue: Queue) -> Self;
 
     /// Set the heartbeat.
     fn heartbeat(self, heartbeat: Option<u16>) -> Self;
@@ -109,16 +110,15 @@ pub trait BrokerBuilder {
 /// A utility function to configure the task routes on a broker builder.
 pub(crate) fn configure_task_routes<Bb: BrokerBuilder>(
     mut broker_builder: Bb,
-    task_routes: &[(String, String)],
+    task_routes: &[(String, Queue)],
 ) -> Result<(Bb, Vec<Rule>), CeleryError> {
     let mut rules: Vec<Rule> = Vec::with_capacity(task_routes.len());
     for (pattern, queue) in task_routes {
-        let rule = Rule::new(&pattern, &queue)?;
+        let rule = Rule::new(&pattern, &queue.name)?;
         rules.push(rule);
         // Ensure all other queues mentioned in task_routes are declared to the broker.
-        broker_builder = broker_builder.declare_queue(&queue);
+        broker_builder = broker_builder.declare_queue(queue.clone());
     }
-
     Ok((broker_builder, rules))
 }
 
@@ -157,4 +157,119 @@ pub(crate) async fn build_and_connect<Bb: BrokerBuilder>(
         error!("Failed to establish connection with broker");
         BrokerError::NotConnected
     })?)
+}
+
+/// Exchange message router that can be used alongside a queue.
+#[derive(Clone)]
+pub struct Exchange {
+    /// Name of the exchange.
+    name: String,
+    /// Key used for message routing.
+    routing_key: String,
+    /// Exchange Kind Type.
+    kind: ExchangeKind,
+    /// Options for a given exchange.
+    options: ExchangeDeclareOptions,
+}
+impl Exchange {
+    /// Instantiates an exchange for use alongside a provided channel.
+    pub async fn declare(&self, channel: &Channel) -> Result<(), lapin::Error> {
+        channel
+            .exchange_declare(
+                &self.name,
+                self.kind.clone(),
+                self.options,
+                FieldTable::default(),
+            )
+            .await
+    }
+}
+
+/// Queue that can be used in conjunction with a Celery app for task routing.
+#[derive(Clone)]
+pub struct Queue {
+    /// Human-readable name for the queue.
+    pub name: String,
+    /// A set of custom options for the given queue.
+    pub options: Option<QueueDeclareOptions>,
+    /// A custom exchange for the custom queue.
+    pub exchange: Option<Exchange>,
+}
+
+impl Queue {
+    /// Creates a new Queue and default options.
+    pub fn new(name: String) -> Self {
+        Self { 
+            name,
+            ..Default::default()
+        }
+    }
+
+    /// Retrieves the current set of options from the queue.
+    pub fn get_options(&self) -> QueueDeclareOptions {
+        match self.options {
+            Some(x) => x,
+            None => QueueDeclareOptions {
+                passive: false,
+                durable: true,
+                exclusive: false,
+                auto_delete: false,
+                nowait: false,
+            },
+        }
+    }
+
+    /// Set's exchange options for a given Queue.
+    pub fn options(mut self, opts: QueueDeclareOptions) -> Self {
+        self.options = Some(opts);
+        self
+    }
+    /// Set's exchange for a given Queue.
+    pub fn exchange(mut self, exch: Exchange) -> Self {
+        self.exchange = Some(exch);
+        self
+    }
+
+    /// Retrieves a routing key, or alternatively an empty string if no exchange is defined.
+    pub fn routing_key(&self) -> &str { 
+        match &self.exchange { 
+            Some(exch) => &exch.routing_key,
+            None => ""
+        }
+    }
+}
+
+impl From<&str> for Queue {
+    /// Convert from string into a Queue.
+    fn from(input: &str) -> Self {
+        Self {
+            name: String::from(input),
+            options: Some(QueueDeclareOptions {
+                passive: false,
+                durable: true,
+                exclusive: false,
+                auto_delete: false,
+                nowait: false,
+            }),
+            exchange: None,
+        }
+    }
+}
+
+impl Default for Queue { 
+
+    fn default() -> Self { 
+        let options = QueueDeclareOptions {
+            passive: false,
+            durable: true,
+            exclusive: false,
+            auto_delete: false,
+            nowait: false,
+        };
+        Self {
+            name:"celery".into(),
+            options: Some(options),
+            exchange: None,
+        }
+    }
 }

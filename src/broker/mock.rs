@@ -1,6 +1,7 @@
 //! Defines mock broker that can be used to test other components that rely on a broker.
 
 use super::{Broker, BrokerBuilder};
+use crate::broker::Queue;
 use crate::error::{BrokerError, ProtocolError};
 use crate::protocol::{Message, TryDeserializeMessage};
 use async_trait::async_trait;
@@ -29,7 +30,7 @@ impl BrokerBuilder for MockBrokerBuilder {
     }
 
     #[allow(unused)]
-    fn declare_queue(self, name: &str) -> Self {
+    fn declare_queue(self, name: Queue) -> Self {
         self
     }
 
